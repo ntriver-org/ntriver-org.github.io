@@ -1,0 +1,134 @@
+# PKeyMaster launch script<br>
+# Scripts are hosted at <code>get.ntriver.org</code> to run <a href="https://ntriver.org/">https://ntriver.org/</a> tools from PowerShell.<hr><pre>
+
+Write-Host
+Write-Host 'Homepage: ' -NoNewline
+Write-Host 'https://ntriver.org' -ForegroundColor Green
+Write-Host
+
+& {
+    function Show-HelpMessage {
+        Write-Host
+        Write-Host 'Try the alternative download method or visit the troubleshooting page.' -ForegroundColor White -BackgroundColor DarkGreen
+        Write-Host 'https://ntriver.org/pkeymaster' -ForegroundColor White -BackgroundColor Blue
+    }
+
+    function Check3rdPartyAV {
+        $avList = Get-CimInstance -Namespace root\SecurityCenter2 -Class AntiVirusProduct | Where-Object { $_.displayName -notlike '*windows*' } | Select-Object -ExpandProperty displayName
+
+        if ($avList) {
+            Write-Host '3rd party Antivirus might be blocking the script - ' -ForegroundColor White -BackgroundColor Blue -NoNewline
+            Write-Host " $($avList -join ', ')" -ForegroundColor DarkRed -BackgroundColor White
+        }
+    }
+
+    if ($ExecutionContext.SessionState.LanguageMode.value__ -ne 0) {
+        $ExecutionContext.SessionState.LanguageMode
+        Write-Host 'PowerShell is not running in Full Language Mode.'
+        Show-HelpMessage
+        return
+    }
+
+    if ($PSVersionTable.PSVersion.Major -lt 3) {
+        Write-Host 'PowerShell 3.0 or later is required.' -ForegroundColor Red
+        Show-HelpMessage
+        return
+    }
+
+    if ([System.Threading.Tasks.Task].GetMember('Run').Length -eq 0) {
+        Write-Host '.NET Framework 4.5 or later is not installed or is corrupted.' -ForegroundColor Red
+        Show-HelpMessage
+        return
+    }
+
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+
+    # An alternative download URL is provided because GitHub may be unavailable in some countries.
+    # The URL does not matter because the downloaded file is verified with SHA-256.
+
+    $releaseHash = '8C4BDCAA834F2510C86FBE242991B8703DBCE9CD8739F9FCCC562A84D739DF35'
+
+    $URLs = @(
+        'https://ntriver.org/files/PKeyMaster-10bc7783b8f2a6dec37841dc1fdf81d631146615.zip',
+        'https://github.com/ntriver-org/PKeyMaster/archive/10bc7783b8f2a6dec37841dc1fdf81d631146615.zip'
+    )
+
+    Write-Host "Downloading PKeyMaster and verifying its SHA-256 checksum..."
+    $errors = @()
+    $response = $null
+
+    foreach ($URL in $URLs) {
+        try {
+            $download = (New-Object Net.WebClient).DownloadData($URL)
+
+            # Verify the file's SHA-256 checksum before using it
+            if (([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($download)).Replace('-', '')) -ne $releaseHash) {
+                $errors += "Hash mismatch for $URL."
+                continue
+            }
+            $response = $download
+            break
+        }
+        catch {
+            $errors += $_
+        }
+    }
+
+    if (-not $response) {
+        Check3rdPartyAV
+        foreach ($err in $errors) {
+            $message = if ($err.Exception) { $err.Exception.Message } else { $err }
+            Write-Host "Error: $message" -ForegroundColor Red
+        }
+        Write-Host "Failed to download PKeyMaster." -ForegroundColor Red
+        Show-HelpMessage
+        return
+    }
+
+    Write-Host "Verification succeeded."
+
+    # Check for AutoRun registry which may create issues with CMD
+    $paths = "HKCU:\SOFTWARE\Microsoft\Command Processor", "HKLM:\SOFTWARE\Microsoft\Command Processor"
+    foreach ($path in $paths) { 
+        if (Get-ItemProperty -Path $path -Name "Autorun" -ErrorAction SilentlyContinue) { 
+            Write-Warning "Autorun registry found, CMD may crash! `nManually copy-paste the below command to fix...`nRemove-ItemProperty -Path '$path' -Name 'Autorun'"
+        } 
+    }
+
+    try {
+        Add-Type -AssemblyName System.IO.Compression
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+        $archiveStream = New-Object IO.MemoryStream(, $response)
+        $archive = New-Object IO.Compression.ZipArchive($archiveStream, [IO.Compression.ZipArchiveMode]::Read)
+
+        $workDir = Join-Path "$env:SystemRoot\Temp" "PKM_$(Get-Random)"
+        [void](New-Item -ItemType Directory -Path $workDir -Force)
+
+        [IO.Compression.ZipFileExtensions]::ExtractToDirectory($archive, $workDir)
+
+        $FilePath = (Get-ChildItem $workDir -Filter 'PKeyMaster.cmd' -Recurse).FullName
+        if (-not $FilePath) {
+            Check3rdPartyAV
+            Write-Host "PKeyMaster.cmd was not found in the extracted archive." -ForegroundColor Red
+            Show-HelpMessage
+            return
+        }
+
+        Write-Host "Launching PKeyMaster..."
+
+        $env:ComSpec = "$env:SystemRoot\system32\cmd.exe"
+        Start-Process -FilePath $env:ComSpec -ArgumentList "/c ""$FilePath""" -Wait
+    }
+    catch {
+        Write-Host "Process failed: $($_.Exception.Message)" -ForegroundColor Red
+        Check3rdPartyAV
+        Show-HelpMessage
+        return
+    }
+    finally {
+        if ($archive) { $archive.Dispose() }
+        if ($archiveStream) { $archiveStream.Dispose() }
+        if ($workDir -and (Test-Path $workDir)) { Remove-Item $workDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
